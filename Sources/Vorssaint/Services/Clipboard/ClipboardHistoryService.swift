@@ -438,6 +438,7 @@ final class ClipboardHistoryService: ObservableObject {
     private var entriesStamp = 0
     private var filterCache: (query: String, stamp: Int, imageLabel: String,
                               result: [ClipboardHistoryEntry])?
+    private var searchCache = ClipboardHistorySearchCache()
 
     func filteredEntries(matching query: String) -> [ClipboardHistoryEntry] {
         // One ranking pass over a large history of long texts costs real
@@ -449,13 +450,21 @@ final class ClipboardHistoryService: ObservableObject {
            cache.stamp == entriesStamp, cache.imageLabel == imageLabel {
             return cache.result
         }
-        let candidates = entries.enumerated().map { index, entry in
-            ClipboardHistorySearchCandidate(index: index,
-                                            text: entry.searchableText(imageLabel: imageLabel),
-                                            isPinned: entry.isPinned)
+        guard !entries.isEmpty else {
+            searchCache.clear()
+            filterCache = (query, entriesStamp, imageLabel, [])
+            return []
         }
+        let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedQuery.isEmpty {
+            filterCache = (query, entriesStamp, imageLabel, entries)
+            return entries
+        }
+        let candidates = searchCache.candidates(for: entries,
+                                                stamp: entriesStamp,
+                                                imageLabel: imageLabel)
         let result = ClipboardHistorySearch.rankedIndexes(candidates: candidates, matching: query)
-            .map { entries[$0] }
+            .compactMap { entries.indices.contains($0) ? entries[$0] : nil }
         filterCache = (query, entriesStamp, imageLabel, result)
         return result
     }

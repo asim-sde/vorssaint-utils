@@ -77,6 +77,127 @@ enum ClipboardFeatureTests {
                                                     matching: "missing") == [],
                "clipboard search returns no results for unmatched terms")
 
+        // MARK: Clipboard history search cache & ranking parity
+
+        let sampleTexts = [
+            "Deploy checklist final",
+            "Token cleanup note",
+            "Final database deploy plan",
+            "Reunião com João",
+            "Серверная конфигурация nginx",
+            "İstanbul boğazı turu",
+            "Lorem ipsum dolor sit amet",
+            "Multi\nline\ttext\rwith  extra   whitespace",
+            "Exact Match Only",
+            "prefix matching candidate",
+        ]
+        var testEntries = sampleTexts.enumerated().map { index, text in
+            ClipboardHistoryEntry(text: text, pinnedAt: index == 1 ? Date() : nil)
+        }
+
+        var searchCache = ClipboardHistorySearchCache()
+        let initialCandidates = searchCache.candidates(for: testEntries, stamp: 1, imageLabel: "Image")
+        suite.expect(searchCache.candidateCount == testEntries.count, "candidates populated")
+        suite.expect(searchCache.cachedEntryCount == testEntries.count, "folded entries cached")
+
+        let testQueries = ["deploy", "dep", "clean", "joao", "сервер", "istanbul", "exact", "missing", ""]
+        for q in testQueries {
+            let nextCandidates = searchCache.candidates(for: testEntries, stamp: 1, imageLabel: "Image")
+            suite.expect(nextCandidates == initialCandidates, "candidates reused across keystrokes without recreation")
+            let ranked = ClipboardHistorySearch.rankedIndexes(candidates: nextCandidates, matching: q)
+            let naiveCandidates = testEntries.enumerated().map { index, entry in
+                ClipboardHistorySearchCandidate(index: index,
+                                                text: entry.searchableText(imageLabel: "Image"),
+                                                isPinned: entry.isPinned)
+            }
+            let naiveRanked = ClipboardHistorySearch.rankedIndexes(candidates: naiveCandidates, matching: q)
+            suite.expect(ranked == naiveRanked, "ranking for '\(q)' is identical before and after caching")
+        }
+
+        let newEntry = ClipboardHistoryEntry(text: "Brand new clipboard item")
+        testEntries.append(newEntry)
+        let updatedCandidates = searchCache.candidates(for: testEntries, stamp: 2, imageLabel: "Image")
+        suite.expect(searchCache.cachedEntryCount == testEntries.count, "cache contains new entry along with existing")
+        suite.expect(updatedCandidates.count == testEntries.count, "candidates updated after stamp bump")
+
+        testEntries.remove(at: 0)
+        let prunedCandidates = searchCache.candidates(for: testEntries, stamp: 3, imageLabel: "Image")
+        suite.expect(searchCache.cachedEntryCount == testEntries.count, "cache pruned deleted entry")
+        suite.expect(prunedCandidates.count == testEntries.count, "candidates match remaining count")
+
+        testEntries[0].text = "Refactored token cleanup procedure"
+        let editedCandidates = searchCache.candidates(for: testEntries, stamp: 4, imageLabel: "Image")
+        suite.expect(editedCandidates[0].normalizedText.contains("refactored"), "candidate normalizedText updated after text edit")
+        suite.expect(editedCandidates[0].words.contains("refactored"), "candidate words set updated after text edit")
+        let editedRanked = ClipboardHistorySearch.rankedIndexes(candidates: editedCandidates, matching: "refactored")
+        suite.expect(editedRanked == [0], "search finds edited text")
+
+        suite.expect(!testEntries[1].isPinned, "target entry is unpinned before toggle")
+        testEntries[1].pinnedAt = Date()
+        let pinToggledCandidates = searchCache.candidates(for: testEntries, stamp: 5, imageLabel: "Image")
+        suite.expect(pinToggledCandidates[1].isPinned, "candidate reflects updated pinned status")
+        let pinRanked = ClipboardHistorySearch.rankedIndexes(candidates: pinToggledCandidates, matching: "deploy")
+        suite.expect(pinRanked.first == 1, "pinned entry gets priority boost in search")
+
+        let testImageEntry = ClipboardHistoryEntry(text: "", kind: .image, imageWidth: 1024, imageHeight: 768)
+        testEntries.append(testImageEntry)
+        let imageCandidatesEN = searchCache.candidates(for: testEntries, stamp: 6, imageLabel: "Image")
+        let imageRankedEN = ClipboardHistorySearch.rankedIndexes(candidates: imageCandidatesEN, matching: "image")
+        suite.expect(imageRankedEN.contains(testEntries.count - 1), "finds image with English label")
+
+        let imageCandidatesPT = searchCache.candidates(for: testEntries, stamp: 6, imageLabel: "Imagem")
+        let imageRankedPT = ClipboardHistorySearch.rankedIndexes(candidates: imageCandidatesPT, matching: "imagem")
+        suite.expect(imageRankedPT.contains(testEntries.count - 1), "finds image with Portuguese label after localization switch")
+
+        let emptyCandidates = searchCache.candidates(for: [], stamp: 7, imageLabel: "Image")
+        suite.expect(emptyCandidates.isEmpty, "empty entries return empty candidates")
+        suite.expect(searchCache.cachedEntryCount == 0, "cache is cleared when entries is empty")
+        suite.expect(searchCache.candidateCount == 0, "candidate count is 0 for empty history")
+
+        _ = searchCache.candidates(for: testEntries, stamp: 8, imageLabel: "Image")
+        suite.expect(searchCache.cachedEntryCount > 0, "cache populated")
+        searchCache.clear()
+        suite.expect(searchCache.cachedEntryCount == 0 && searchCache.candidateCount == 0, "clear resets cache completely")
+
+        testEntries.swapAt(0, 1)
+        let swappedCandidates = searchCache.candidates(for: testEntries, stamp: 9, imageLabel: "Image")
+        suite.expect(swappedCandidates[0].text == testEntries[0].text, "candidate 0 reflects swapped entry")
+        suite.expect(swappedCandidates[1].text == testEntries[1].text, "candidate 1 reflects swapped entry")
+        suite.expect(searchCache.cachedEntryCount == testEntries.count, "folded texts reused during swap")
+
+        testEntries[0].copiedAt = Date()
+        let touchedCandidates = searchCache.candidates(for: testEntries, stamp: 10, imageLabel: "Image")
+        suite.expect(touchedCandidates.count == testEntries.count, "candidates rebuilt after metadata stamp bump")
+        suite.expect(searchCache.cachedEntryCount == testEntries.count, "folded texts preserved after metadata stamp bump")
+
+        for spaceQuery in ["  deploy   plan  ", "   ", "deploy\tplan", "deploy\nplan"] {
+            let spaceRanked = ClipboardHistorySearch.rankedIndexes(candidates: touchedCandidates, matching: spaceQuery)
+            let naiveCandidates = testEntries.enumerated().map { index, entry in
+                ClipboardHistorySearchCandidate(index: index,
+                                                text: entry.searchableText(imageLabel: "Image"),
+                                                isPinned: entry.isPinned)
+            }
+            let naiveRanked = ClipboardHistorySearch.rankedIndexes(candidates: naiveCandidates, matching: spaceQuery)
+            suite.expect(spaceRanked == naiveRanked, "ranking for whitespace query '\(spaceQuery)' matches naive search")
+        }
+
+        var largeEntries: [ClipboardHistoryEntry] = []
+        for i in 0..<100 {
+            let longText = String(repeating: "Текст для проверки производительности буфера обмена номер \(i). Многострочные логи и документы.\n", count: 50)
+            largeEntries.append(ClipboardHistoryEntry(text: longText))
+        }
+        var largeCache = ClipboardHistorySearchCache()
+        let largeCand1 = largeCache.candidates(for: largeEntries, stamp: 1, imageLabel: "Image")
+        _ = ClipboardHistorySearch.rankedIndexes(candidates: largeCand1, matching: "производительности")
+
+        for keystroke in ["произ", "произв", "производ", "номер 42"] {
+            let largeCandN = largeCache.candidates(for: largeEntries, stamp: 1, imageLabel: "Image")
+            let matches = ClipboardHistorySearch.rankedIndexes(candidates: largeCandN, matching: keystroke)
+            if keystroke == "номер 42" {
+                suite.expect(matches.first == 42, "finds target entry among 100 long entries")
+            }
+        }
+
         // MARK: Clipboard history color swatches
 
         func expectColor(_ text: String, _ expected: ClipboardHistoryColor?, _ label: String,

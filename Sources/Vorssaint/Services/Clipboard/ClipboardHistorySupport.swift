@@ -485,10 +485,100 @@ enum ClipboardHistoryEditing {
     }
 }
 
-struct ClipboardHistorySearchCandidate {
+struct ClipboardHistorySearchFolded: Equatable {
+    let searchableText: String
+    let normalizedText: String
+    let words: Set<String>
+
+    init(searchableText: String) {
+        self.searchableText = searchableText
+        let folded = ClipboardHistorySearch.normalized(searchableText)
+        self.normalizedText = folded
+        self.words = ClipboardHistorySearch.words(in: folded)
+    }
+}
+
+struct ClipboardHistorySearchCandidate: Equatable {
     var index: Int
-    var text: String
+    var text: String {
+        didSet {
+            normalizedText = ClipboardHistorySearch.normalized(text)
+            words = ClipboardHistorySearch.words(in: normalizedText)
+        }
+    }
     var isPinned: Bool
+    private(set) var normalizedText: String
+    private(set) var words: Set<String>
+
+    init(index: Int,
+         text: String,
+         isPinned: Bool,
+         normalizedText: String? = nil,
+         words: Set<String>? = nil) {
+        self.index = index
+        self.text = text
+        self.isPinned = isPinned
+        let folded = normalizedText ?? ClipboardHistorySearch.normalized(text)
+        self.normalizedText = folded
+        self.words = words ?? ClipboardHistorySearch.words(in: folded)
+    }
+}
+
+struct ClipboardHistorySearchCache {
+    private var foldedEntries: [UUID: ClipboardHistorySearchFolded] = [:]
+    private var cachedCandidates: [ClipboardHistorySearchCandidate] = []
+    private var cachedStamp: Int?
+    private var cachedImageLabel: String?
+
+    var cachedEntryCount: Int { foldedEntries.count }
+    var candidateCount: Int { cachedCandidates.count }
+
+    mutating func candidates(for entries: [ClipboardHistoryEntry],
+                             stamp: Int,
+                             imageLabel: String) -> [ClipboardHistorySearchCandidate] {
+        if cachedStamp == stamp && cachedImageLabel == imageLabel {
+            return cachedCandidates
+        }
+
+        if entries.isEmpty {
+            clear()
+            cachedStamp = stamp
+            cachedImageLabel = imageLabel
+            return []
+        }
+
+        var nextFolded: [UUID: ClipboardHistorySearchFolded] = [:]
+        nextFolded.reserveCapacity(entries.count)
+
+        let candidates = entries.enumerated().map { index, entry in
+            let searchable = entry.searchableText(imageLabel: imageLabel)
+            let folded: ClipboardHistorySearchFolded
+            if let existing = foldedEntries[entry.id], existing.searchableText == searchable {
+                folded = existing
+            } else {
+                folded = ClipboardHistorySearchFolded(searchableText: searchable)
+            }
+            nextFolded[entry.id] = folded
+            return ClipboardHistorySearchCandidate(index: index,
+                                                   text: searchable,
+                                                   isPinned: entry.isPinned,
+                                                   normalizedText: folded.normalizedText,
+                                                   words: folded.words)
+        }
+
+        foldedEntries = nextFolded
+        cachedStamp = stamp
+        cachedImageLabel = imageLabel
+        cachedCandidates = candidates
+        return candidates
+    }
+
+    mutating func clear() {
+        foldedEntries.removeAll()
+        cachedCandidates.removeAll()
+        cachedStamp = nil
+        cachedImageLabel = nil
+    }
 }
 
 enum ClipboardHistorySearch {
@@ -500,10 +590,11 @@ enum ClipboardHistorySearch {
 
         return candidates
             .compactMap { candidate -> (index: Int, score: Int, originalOrder: Int)? in
-                let text = normalized(candidate.text)
+                let text = candidate.normalizedText
                 guard tokens.allSatisfy({ text.contains($0) }) else { return nil }
                 return (candidate.index,
                         score(for: text,
+                              words: candidate.words,
                               normalizedQuery: normalizedQuery,
                               tokens: tokens,
                               isPinned: candidate.isPinned),
@@ -524,7 +615,12 @@ enum ClipboardHistorySearch {
         return tokens.allSatisfy { normalizedText.contains($0) }
     }
 
+    static func words(in normalizedText: String) -> Set<String> {
+        Set(normalizedText.split(whereSeparator: \.isWhitespace).map(String.init))
+    }
+
     private static func score(for text: String,
+                              words: Set<String>,
                               normalizedQuery: String,
                               tokens: [String],
                               isPinned: Bool) -> Int {
@@ -533,7 +629,6 @@ enum ClipboardHistorySearch {
         if text.hasPrefix(normalizedQuery) { score += 900 }
         if text.contains(normalizedQuery) { score += 700 }
 
-        let words = Set(text.split(whereSeparator: \.isWhitespace).map(String.init))
         for token in tokens {
             if words.contains(token) {
                 score += 140
@@ -553,7 +648,7 @@ enum ClipboardHistorySearch {
             .filter { !$0.isEmpty }
     }
 
-    private static func normalized(_ value: String) -> String {
+    static func normalized(_ value: String) -> String {
         value
             // No locale: Turkish folds a dotted I to a dotless one, and a
             // search that inherited the Mac's locale would stop finding
