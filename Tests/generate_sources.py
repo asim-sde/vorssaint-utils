@@ -166,6 +166,7 @@ def main():
           + "extension ClipboardPreviewContract {\nfinal class Service: Fixture {\n"
           + declaration(clipboard, "    @Published private(set) var entries:")
           + declaration(clipboard, "    func updateText(")
+          + declaration(clipboard, "    func filteredEntries(matching query: String)")
           + "".join(declaration(clipboard, prefix).replace("private ", "", 1) for prefix in [
               "    func togglePin(", "    func copy(_ entry:", "    private func touch(",
               "    private var firstRecentIndex:", "    private func normalizeEntryOrder("])

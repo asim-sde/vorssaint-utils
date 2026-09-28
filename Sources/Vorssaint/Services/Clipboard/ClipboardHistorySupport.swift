@@ -532,6 +532,7 @@ struct ClipboardHistorySearchCache {
 
     var cachedEntryCount: Int { foldedEntries.count }
     var candidateCount: Int { cachedCandidates.count }
+    private(set) var foldCount = 0
 
     mutating func candidates(for entries: [ClipboardHistoryEntry],
                              stamp: Int,
@@ -557,6 +558,7 @@ struct ClipboardHistorySearchCache {
                 folded = existing
             } else {
                 folded = ClipboardHistorySearchFolded(searchableText: searchable)
+                foldCount += 1
             }
             nextFolded[entry.id] = folded
             return ClipboardHistorySearchCandidate(index: index,
@@ -571,6 +573,30 @@ struct ClipboardHistorySearchCache {
         cachedImageLabel = imageLabel
         cachedCandidates = candidates
         return candidates
+    }
+
+    mutating func prune(keeping entries: [ClipboardHistoryEntry], imageLabel: String? = nil) {
+        if entries.isEmpty {
+            clear()
+            return
+        }
+        guard !foldedEntries.isEmpty || !cachedCandidates.isEmpty else { return }
+        guard let label = imageLabel ?? cachedImageLabel else { return }
+        cachedCandidates.removeAll()
+        cachedStamp = nil
+        var retained: [UUID: ClipboardHistorySearchFolded] = [:]
+        retained.reserveCapacity(foldedEntries.count)
+        for entry in entries {
+            if let existing = foldedEntries[entry.id],
+               existing.searchableText == entry.searchableText(imageLabel: label) {
+                retained[entry.id] = existing
+            }
+        }
+        foldedEntries = retained
+    }
+
+    func isCached(id: UUID) -> Bool {
+        foldedEntries[id] != nil
     }
 
     mutating func clear() {

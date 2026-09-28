@@ -24,6 +24,10 @@ final class ClipboardHistoryService: ObservableObject {
     @Published private(set) var entries: [ClipboardHistoryEntry] = [] {
         didSet {
             entriesStamp &+= 1
+            searchCache.prune(keeping: entries)
+            // The result array holds full entry texts, so a cleared or edited
+            // history's content must not linger in it until the next search.
+            filterCache = nil
             // Keeps latestPasteboardEntry from outliving the entry it points
             // to: removing it, clearing recent/all, or trimming to a smaller
             // limit must stop the preview from claiming stale content is
@@ -256,15 +260,19 @@ final class ClipboardHistoryService: ObservableObject {
     }
 
     private func touch(_ entryIDs: [UUID]) {
+        // One assignment for the whole batch: each element write fires the
+        // entries observer, which a large selection copy must not pay per item.
+        var updated = entries
         var didUpdate = false
         let now = Date()
         for entryID in entryIDs {
-            if let index = entries.firstIndex(where: { $0.id == entryID }) {
-                entries[index].copiedAt = now
+            if let index = updated.firstIndex(where: { $0.id == entryID }) {
+                updated[index].copiedAt = now
                 didUpdate = true
             }
         }
         if didUpdate {
+            entries = updated
             save()
         }
     }
