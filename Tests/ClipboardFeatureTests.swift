@@ -1119,5 +1119,47 @@ enum ClipboardPreviewContract {
         let editedPass = service.filteredEntries(matching: "edited")
         suite.expect(editedPass.map(\.text) == ["Beta edited notes"], "search sees the edited text")
         suite.expect(service.searchCache.foldCount == foldsAtStart + 4, "only the edited entry refolds")
+        searchFolding(suite)
+    }
+
+    /// #1885: typing searches the history once per keystroke, so the folded
+    /// text has to be reused between keystrokes and still rank exactly as a
+    /// fresh fold would.
+    private static func searchFolding(_ suite: TestSuite) {
+        var pinned = ClipboardHistoryEntry(text: "Token CLEANUP\tnote")
+        pinned.pinnedAt = Date()
+        let texts = ["Deploy checklist final", "Final database\ndeploy plan", "Reunião com João"]
+        let entries = [pinned] + texts.map { ClipboardHistoryEntry(text: $0) }
+        let service = Service()
+        service.setEntries(entries)
+        let unfolded = entries.enumerated().map { index, entry in
+            ClipboardHistorySearchCandidate(index: index, text: entry.text, isPinned: entry.isPinned)
+        }
+        for query in ["deploy final", "cleanup token", "reuniao JOAO", "plan deploy", "missing", "", "  "] {
+            let expected = ClipboardHistorySearch.rankedIndexes(candidates: unfolded, matching: query)
+                .map { entries[$0].id }
+            suite.expect(service.filteredEntries(matching: query).map(\.id) == expected,
+                         "searching folded history text ranks \"\(query)\" like a fresh fold")
+        }
+
+        service.searchCache.clear()
+        _ = service.filteredEntries(matching: "")
+        suite.expect(service.searchCache.cachedEntryCount == 0,
+                     "an empty search lists the history without folding it")
+
+        let foldsBeforeSearch = service.searchCache.foldCount
+        _ = service.filteredEntries(matching: "d")
+        suite.expect(service.searchCache.foldCount == foldsBeforeSearch + entries.count,
+                     "a search folds the history once for the next keystroke")
+        _ = service.filteredEntries(matching: "de")
+        suite.expect(service.searchCache.foldCount == foldsBeforeSearch + entries.count,
+                     "the next keystroke reuses the folded history instead of folding it again")
+
+        let added = ClipboardHistoryEntry(text: "Sentinel copied later")
+        service.setEntries(entries + [added])
+        suite.expect(service.filteredEntries(matching: "sentinel").map(\.id) == [added.id],
+                     "a history change folds the new text and drops the old fold")
+        suite.expect(service.searchCache.foldCount == foldsBeforeSearch + entries.count + 1,
+                     "only the new entry refolds after a history change")
     }
 }
