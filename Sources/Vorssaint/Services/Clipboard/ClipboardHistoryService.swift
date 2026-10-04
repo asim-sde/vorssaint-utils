@@ -352,10 +352,6 @@ final class ClipboardHistoryService: ObservableObject {
         save()
     }
 
-    func clearAll() {
-        clearRecent()
-    }
-
     func canMove(_ entry: ClipboardHistoryEntry, _ direction: ClipboardHistoryMoveDirection) -> Bool {
         moveDestination(for: entry, direction) != nil
     }
@@ -1396,11 +1392,11 @@ final class ClipboardHistoryService: ObservableObject {
                 self.removeSelectedQuickEntries()
                 return nil
             }
-            if event.keyCode == UInt16(kVK_DownArrow) {
+            if event.keyCode == UInt16(kVK_DownArrow) || (modifiers == [.control] && key == "n") {
                 self.moveQuickSelection(1)
                 return nil
             }
-            if event.keyCode == UInt16(kVK_UpArrow) {
+            if event.keyCode == UInt16(kVK_UpArrow) || (modifiers == [.control] && key == "p") {
                 self.moveQuickSelection(-1)
                 return nil
             }
